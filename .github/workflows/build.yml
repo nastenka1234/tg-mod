@@ -35,8 +35,21 @@ jobs:
           echo "org.gradle.caching=true" >> ~/.gradle/gradle.properties
       - name: Build
         run: chmod +x gradlew && ./gradlew assembleAfatRelease --no-daemon --stacktrace -Pandroid.injected.build.abi=arm64-v8a
+      - name: Sign APK
+        run: |
+          BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
+          TOOLS=$ANDROID_HOME/build-tools/$BT
+          keytool -genkeypair -keystore mod.jks -alias mod -keyalg RSA -keysize 2048 -validity 10000 -storepass modpass123 -keypass modpass123 -dname "CN=mod"
+          mkdir -p signed
+          for f in $(find . -name "*.apk" -not -path "./signed/*" | grep -v Tests); do
+            n=$(echo "$f" | sed 's#^\./##' | tr '/' '_')
+            $TOOLS/zipalign -f -p 4 "$f" "signed/al_$n"
+            $TOOLS/apksigner sign --ks mod.jks --ks-pass pass:modpass123 --key-pass pass:modpass123 --out "signed/$n" "signed/al_$n"
+            rm "signed/al_$n"
+          done
+          ls -la signed
       - uses: actions/upload-artifact@v4
         with:
-          name: apk
-          path: "**/*.apk"
+          name: apk-signed
+          path: signed/*.apk
           if-no-files-found: error
