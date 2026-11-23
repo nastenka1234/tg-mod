@@ -1,0 +1,42 @@
+name: build
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: Install exact SDK parts
+        run: |
+          SDKM=$(ls -d $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager | tail -1)
+          echo "sdkmanager: $SDKM"
+          NDK=$(grep -rhE "^[[:space:]]*ndkVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          BT=$(grep -rhE "^[[:space:]]*buildToolsVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+          SDK=$(grep -rhE "^[[:space:]]*compileSdk(Version)?[[:space:]]" --include=build.gradle . | grep -oE "[0-9]+" | head -1)
+          NDK=${NDK:-21.4.7075529}
+          BT=${BT:-36.0.0}
+          SDK=${SDK:-36}
+          echo "NDK=$NDK BT=$BT SDK=$SDK"
+          yes | $SDKM --licenses > /dev/null || true
+          $SDKM "platforms;android-$SDK" "build-tools;$BT" "ndk;$NDK" "cmake;3.10.2.4988404"
+      - name: Gradle settings
+        run: |
+          mkdir -p ~/.gradle
+          echo "org.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8" >> ~/.gradle/gradle.properties
+          echo "org.gradle.daemon=false" >> ~/.gradle/gradle.properties
+          echo "org.gradle.parallel=true" >> ~/.gradle/gradle.properties
+          echo "org.gradle.caching=true" >> ~/.gradle/gradle.properties
+      - name: Build
+        run: chmod +x gradlew && ./gradlew assembleAfatRelease --no-daemon --stacktrace -Pandroid.injected.build.abi=arm64-v8a
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: "**/*.apk"
+          if-no-files-found: error
