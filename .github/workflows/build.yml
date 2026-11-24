@@ -3,7 +3,7 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,7 +16,6 @@ jobs:
       - name: Install exact SDK parts
         run: |
           SDKM=$(ls -d $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager | tail -1)
-          echo "sdkmanager: $SDKM"
           NDK=$(grep -rhE "^[[:space:]]*ndkVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           BT=$(grep -rhE "^[[:space:]]*buildToolsVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
           SDK=$(grep -rhE "^[[:space:]]*compileSdk(Version)?[[:space:]]" --include=build.gradle . | grep -oE "[0-9]+" | head -1)
@@ -34,7 +33,18 @@ jobs:
           echo "org.gradle.parallel=true" >> ~/.gradle/gradle.properties
           echo "org.gradle.caching=true" >> ~/.gradle/gradle.properties
       - name: Build
-        run: chmod +x gradlew && ./gradlew assembleAfatRelease --no-daemon --stacktrace -Pandroid.injected.build.abi=arm64-v8a
+        run: chmod +x gradlew && ./gradlew assembleAfatRelease --no-daemon --stacktrace -Pandroid.injected.testOnly=false
+      - name: Check testOnly
+        run: |
+          BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
+          for f in $(find . -name "*.apk" | grep -v Tests); do
+            echo "== $f"
+            if $ANDROID_HOME/build-tools/$BT/aapt2 dump badging "$f" | grep -qi testOnly; then
+              echo "TESTONLY FOUND in $f"
+              exit 1
+            fi
+          done
+          echo "no testOnly"
       - name: Sign APK
         run: |
           BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
