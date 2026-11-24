@@ -3,8 +3,17 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache/CodeQL /opt/microsoft /usr/local/lib/android/sdk/ndk
+          sudo docker image prune --all --force || true
+          sudo apt-get clean
+          df -h /
+          nproc
+          free -g
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -12,54 +21,69 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
-      - name: Install exact SDK parts
+      - name: Limit to arm64 only
+        run: |
+          grep -rn "armeabi-v7a" --include=build.gradle . || true
+          find . -name build.gradle -not -path "./TMessagesProj/jni/*" -exec sed -i -e 's/"armeabi-v7a", *"arm64-v8a", *"x86", *"x86_64"/"arm64-v8a"/g' -e "s/'armeabi-v7a', *'arm64-v8a', *'x86', *'x86_64'/'arm64-v8a'/g" {} +
+          echo "---- after patch ----"
+          grep -rn "abiFilters" --include=build.gradle . || true
+      - name: Install SDK parts
         run: |
           SDKM=$(ls -d $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager | tail -1)
-          NDK=$(grep -rhE "^[[:space:]]*ndkVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          BT=$(grep -rhE "^[[:space:]]*buildToolsVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
-          SDK=$(grep -rhE "^[[:space:]]*compileSdk(Version)?[[:space:]]" --include=build.gradle . | grep -oE "[0-9]+" | head -1)
-          NDK=${NDK:-21.4.7075529}
-          BT=${BT:-36.0.0}
-          SDK=${SDK:-36}
-          echo "NDK=$NDK BT=$BT SDK=$SDK"
+          NDKS=$(grep -rhE "^[[:space:]]*ndkVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u)
+          BTS=$(grep -rhE "^[[:space:]]*buildToolsVersion" --include=build.gradle . | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | sort -u)
+          SDKS=$(grep -rhE "^[[:space:]]*compileSdk(Version)?[[:space:]]" --include=build.gradle . | grep -oE "[0-9]+" | sort -u)
+          echo "NDKS=$NDKS"
+          echo "BTS=$BTS"
+          echo "SDKS=$SDKS"
           yes | $SDKM --licenses > /dev/null || true
-          $SDKM "platforms;android-$SDK" "build-tools;$BT" "ndk;$NDK" "cmake;3.10.2.4988404"
+          PK="cmake;3.10.2.4988404"
+          for n in $NDKS; do PK="$PK ndk;$n"; done
+          for b in $BTS; do PK="$PK build-tools;$b"; done
+          for s in $SDKS; do PK="$PK platforms;android-$s"; done
+          echo "installing: $PK"
+          $SDKM $PK
+          df -h /
       - name: Gradle settings
         run: |
           mkdir -p ~/.gradle
-          echo "org.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8" >> ~/.gradle/gradle.properties
+          echo "org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8" >> ~/.gradle/gradle.properties
           echo "org.gradle.daemon=false" >> ~/.gradle/gradle.properties
           echo "org.gradle.parallel=true" >> ~/.gradle/gradle.properties
-          echo "org.gradle.caching=true" >> ~/.gradle/gradle.properties
+      - name: Preflight (dry run, no compile)
+        run: |
+          chmod +x gradlew
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --dry-run --no-daemon --console=plain
       - name: Build
-        run: chmod +x gradlew && ./gradlew assembleAfatRelease --no-daemon --stacktrace -Pandroid.injected.testOnly=false
-      - name: Check testOnly
+        run: |
+          date
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --console=plain -Pandroid.injected.testOnly=false
+          date
+      - name: Disk after build
+        if: always()
+        run: df -h /
+      - name: Verify APK
         run: |
           BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
-          for f in $(find . -name "*.apk" | grep -v Tests); do
+          T=$ANDROID_HOME/build-tools/$BT
+          mkdir -p out
+          for f in $(find TMessagesProj_App/build/outputs/apk -name "*.apk"); do
             echo "== $f"
-            if $ANDROID_HOME/build-tools/$BT/aapt2 dump badging "$f" | grep -qi testOnly; then
-              echo "TESTONLY FOUND in $f"
-              exit 1
+            ls -la "$f"
+            if $T/aapt2 dump badging "$f" | grep -qi testOnly; then echo "TESTONLY FOUND"; exit 1; fi
+            if $T/apksigner verify "$f"; then
+              cp "$f" out/
+            else
+              echo "not signed, signing with fallback key"
+              keytool -genkeypair -keystore mod.jks -alias mod -keyalg RSA -keysize 2048 -validity 10000 -storepass modpass123 -keypass modpass123 -dname "CN=mod" 2>/dev/null || true
+              $T/zipalign -f -p 4 "$f" al.apk
+              $T/apksigner sign --ks mod.jks --ks-pass pass:modpass123 --key-pass pass:modpass123 --out "out/$(basename $f)" al.apk
+              rm al.apk
             fi
           done
-          echo "no testOnly"
-      - name: Sign APK
-        run: |
-          BT=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
-          TOOLS=$ANDROID_HOME/build-tools/$BT
-          keytool -genkeypair -keystore mod.jks -alias mod -keyalg RSA -keysize 2048 -validity 10000 -storepass modpass123 -keypass modpass123 -dname "CN=mod"
-          mkdir -p signed
-          for f in $(find . -name "*.apk" -not -path "./signed/*" | grep -v Tests); do
-            n=$(echo "$f" | sed 's#^\./##' | tr '/' '_')
-            $TOOLS/zipalign -f -p 4 "$f" "signed/al_$n"
-            $TOOLS/apksigner sign --ks mod.jks --ks-pass pass:modpass123 --key-pass pass:modpass123 --out "signed/$n" "signed/al_$n"
-            rm "signed/al_$n"
-          done
-          ls -la signed
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-signed
-          path: signed/*.apk
+          name: apk-final
+          path: out/*.apk
           if-no-files-found: error
