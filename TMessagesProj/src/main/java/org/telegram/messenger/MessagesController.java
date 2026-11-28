@@ -2583,6 +2583,7 @@ public class MessagesController extends BaseController implements NotificationCe
             TLRPC.User user = getUserConfig().getCurrentUser();
             if (user != null) {
                 user.emoji_status = new_emoji_status;
+                JojoProfiles.mirrorStatus(currentAccount, new_emoji_status);
                 getNotificationCenter().postNotificationName(NotificationCenter.userEmojiStatusUpdated, user);
             }
         } else {
@@ -6832,6 +6833,7 @@ public class MessagesController extends BaseController implements NotificationCe
         if (user == null) {
             return false;
         }
+        JojoProfiles.onUser(currentAccount, user);
         fromCache = fromCache && user.id / 1000 != 333 && user.id != 777000;
         TLRPC.User oldUser = users.get(user.id);
         if (oldUser == user && !force) {
