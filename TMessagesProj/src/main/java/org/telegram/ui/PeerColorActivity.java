@@ -2054,7 +2054,7 @@ public class PeerColorActivity extends BaseFragment implements NotificationCente
                 }
                 getMessagesController().updateEmojiStatus(0, new_emoji_status, gift);
             }
-            JojoProfiles.mirrorMine(currentAccount, me);
+            org.telegram.messenger.JojoProfiles.mirrorMine(currentAccount, me);
             getMessagesController().putUser(me, false);
             getUserConfig().saveConfig(true);
             finishFragment();
