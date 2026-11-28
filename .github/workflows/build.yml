@@ -54,10 +54,23 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :TMessagesProj_App:assembleAfatRelease --dry-run --no-daemon --console=plain
+      - name: Compile check (resources + java, fails fast and prints errors)
+        run: |
+          set -o pipefail
+          ./gradlew :TMessagesProj_App:compileAfatReleaseJavaWithJavac --no-daemon --console=plain -Pandroid.injected.testOnly=false 2>&1 | tee check.log || {
+            MSG=$({ grep -E "error:|AAPT|aapt|Resource|resource" check.log | head -25; grep -A14 "What went wrong" check.log | head -30; } | awk 'BEGIN{ORS="%0A"}{print substr($0,1,300)}')
+            echo "::error title=Compile check failed::$MSG"
+            exit 1
+          }
       - name: Build
         run: |
           date
-          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --console=plain -Pandroid.injected.testOnly=false
+          set -o pipefail
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --console=plain -Pandroid.injected.testOnly=false 2>&1 | tee build.log || {
+            MSG=$({ grep -E "error:|AAPT|aapt" build.log | head -25; grep -A14 "What went wrong" build.log | head -30; } | awk 'BEGIN{ORS="%0A"}{print substr($0,1,300)}')
+            echo "::error title=Build failed::$MSG"
+            exit 1
+          }
           date
       - name: Disk after build
         if: always()
